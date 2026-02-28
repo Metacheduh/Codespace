@@ -15,6 +15,8 @@ import sqlite3
 from typing import Any
 from urllib.request import Request, urlopen
 
+from bs4 import BeautifulSoup
+
 from agent_manager.jobs.base import BaseJob
 from agent_manager.models import Database
 
@@ -42,7 +44,8 @@ class DOJMonitorJob(BaseJob):
                 (source["name"], run_id, url, content_hash, html),
             )
 
-            articles = self._extract_articles(html)
+            selectors = source.get("selectors", {})
+            articles = self._extract_articles(html, selectors)
             for article in articles:
                 self._process_article(conn, run_id, article, "doj")
 
@@ -51,19 +54,30 @@ class DOJMonitorJob(BaseJob):
         with urlopen(req, timeout=self.config.get("timeout_seconds", 180)) as resp:  # noqa: S310
             return resp.read().decode("utf-8", errors="replace")
 
-    def _extract_articles(self, html: str) -> list[dict[str, str]]:
-        """Deterministic HTML parsing for article blocks."""
+    def _extract_articles(self, html: str, selectors: dict) -> list[dict[str, str]]:
+        """Extract articles using CSS selectors and BeautifulSoup."""
         articles: list[dict[str, str]] = []
-        # Extract <a> tags with titles and hrefs
-        pattern = re.findall(
-            r'<a[^>]+href="([^"]*)"[^>]*>(.*?)</a>',
-            html,
-            re.DOTALL,
-        )
-        for href, title_raw in pattern:
-            title = re.sub(r"<[^>]+>", "", title_raw).strip()
-            if title and len(title) > 10:
+        soup = BeautifulSoup(html, "html.parser")
+
+        article_selector = selectors.get("articles")
+        if not article_selector:
+            logger.warning("No 'articles' selector configured")
+            return articles
+
+        containers = soup.select(article_selector)
+        if not containers:
+            logger.debug("No article containers matched selector: %s", article_selector)
+            return articles
+
+        for container in containers:
+            link = container.find("a", href=True)
+            if not link:
+                continue
+            href = link.get("href", "").strip()
+            title = link.get_text(strip=True)
+            if title and len(title) > 10 and href:
                 articles.append({"title": title, "url": href})
+
         return articles
 
     def _process_article(

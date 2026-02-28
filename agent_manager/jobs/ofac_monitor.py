@@ -14,6 +14,8 @@ import sqlite3
 from typing import Any
 from urllib.request import Request, urlopen
 
+from bs4 import BeautifulSoup
+
 from agent_manager.jobs.base import BaseJob
 from agent_manager.models import Database
 
@@ -41,7 +43,8 @@ class OFACMonitorJob(BaseJob):
                 (source["name"], run_id, url, content_hash, html),
             )
 
-            actions = self._extract_actions(html)
+            selectors = source.get("selectors", {})
+            actions = self._extract_actions(html, selectors)
             for action in actions:
                 self._process_action(conn, run_id, action)
 
@@ -50,18 +53,30 @@ class OFACMonitorJob(BaseJob):
         with urlopen(req, timeout=self.config.get("timeout_seconds", 180)) as resp:  # noqa: S310
             return resp.read().decode("utf-8", errors="replace")
 
-    def _extract_actions(self, html: str) -> list[dict[str, str]]:
-        """Deterministic extraction of OFAC action items."""
+    def _extract_actions(self, html: str, selectors: dict) -> list[dict[str, str]]:
+        """Extract OFAC actions using CSS selectors and BeautifulSoup."""
         actions: list[dict[str, str]] = []
-        pattern = re.findall(
-            r'<a[^>]+href="([^"]*)"[^>]*>(.*?)</a>',
-            html,
-            re.DOTALL,
-        )
-        for href, title_raw in pattern:
-            title = re.sub(r"<[^>]+>", "", title_raw).strip()
-            if title and len(title) > 5:
+        soup = BeautifulSoup(html, "html.parser")
+
+        action_selector = selectors.get("actions")
+        if not action_selector:
+            logger.warning("No 'actions' selector configured")
+            return actions
+
+        containers = soup.select(action_selector)
+        if not containers:
+            logger.debug("No action containers matched selector: %s", action_selector)
+            return actions
+
+        for container in containers:
+            link = container.find("a", href=True)
+            if not link:
+                continue
+            href = link.get("href", "").strip()
+            title = link.get_text(strip=True)
+            if title and len(title) > 5 and href:
                 actions.append({"title": title, "url": href})
+
         return actions
 
     def _process_action(
