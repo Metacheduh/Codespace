@@ -25,6 +25,7 @@ import yaml
 
 from agent_manager.alerting import AlertRulesEngine
 from agent_manager.dag import JobDAG
+from agent_manager.helpers.circuit_breaker import CircuitBreakerManager
 from agent_manager.jobs.alert_dispatcher import AlertDispatcherJob
 from agent_manager.jobs.base import BaseJob
 from agent_manager.jobs.doj_monitor import DOJMonitorJob
@@ -57,6 +58,14 @@ class AgentManager:
         self.scheduler = ScheduleEvaluator(self.config["schedules"])
         self.dag = self._build_dag()
         self._retry_cfg = self.config.get("retry", {})
+        # Circuit breaker for HTTP endpoints (5 failures before opening, 5 min recovery timeout)
+        self.circuit_breakers = CircuitBreakerManager(
+            default_config={
+                "failure_threshold": 5,
+                "recovery_timeout": 300.0,
+                "success_threshold": 2,
+            }
+        )
 
     def _load_config(self) -> dict[str, Any]:
         with open(self.config_path) as f:
@@ -86,6 +95,9 @@ class AgentManager:
                 alert_rules=self.config.get("alert_rules", {}),
                 notification_config=self.config.get("notifications"),
             )
+        # Pass circuit breaker to jobs that make HTTP requests
+        if job_name in ("usvsst_scraper", "doj_monitor", "ofac_monitor"):
+            return job_cls(job_cfg, self.db, circuit_breakers=self.circuit_breakers)
         return job_cls(job_cfg, self.db)
 
     # ── Main tick (called once per minute by external scheduler) ──────

@@ -17,6 +17,7 @@ from urllib.request import Request, urlopen
 
 from bs4 import BeautifulSoup
 
+from agent_manager.helpers.circuit_breaker import CircuitBreakerManager
 from agent_manager.jobs.base import BaseJob
 from agent_manager.models import Database
 
@@ -26,16 +27,36 @@ logger = logging.getLogger(__name__)
 class DOJMonitorJob(BaseJob):
     name = "doj_monitor"
 
-    def __init__(self, config: dict[str, Any], db: Database) -> None:
+    def __init__(
+        self,
+        config: dict[str, Any],
+        db: Database,
+        circuit_breakers: CircuitBreakerManager | None = None,
+    ) -> None:
         super().__init__(config, db)
         self.sources = config.get("sources", [])
         self.keywords: list[str] = [k.lower() for k in config.get("keywords", [])]
+        self.circuit_breakers = circuit_breakers
 
     def execute(self, conn: sqlite3.Connection, run_id: int) -> None:
         for source in self.sources:
             url = source["url"]
             logger.info("Fetching DOJ articles from %s", url)
-            html = self._fetch(url)
+
+            # Check circuit breaker before fetching
+            if self.circuit_breakers and not self.circuit_breakers.allow_request(url):
+                logger.warning("Circuit breaker OPEN for %s — skipping", url)
+                continue
+
+            try:
+                html = self._fetch(url)
+                if self.circuit_breakers:
+                    self.circuit_breakers.record_success(url)
+            except Exception as e:
+                if self.circuit_breakers:
+                    self.circuit_breakers.record_failure(url)
+                raise
+
             content_hash = self.content_hash(html)
 
             conn.execute(
