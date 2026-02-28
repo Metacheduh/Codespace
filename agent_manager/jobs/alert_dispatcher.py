@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import json
 import logging
+import smtplib
 import sqlite3
+from email.message import EmailMessage
 from typing import Any
 from urllib.request import Request, urlopen
 
@@ -53,6 +55,8 @@ class AlertDispatcherJob(BaseJob):
         """Send alert through configured notification channels."""
         if self.notification_config.get("log", {}).get("enabled", True):
             self._dispatch_log(alert)
+        if self.notification_config.get("email", {}).get("enabled", False):
+            self._dispatch_email(alert)
         if self.notification_config.get("webhook", {}).get("enabled", False):
             self._dispatch_webhook(alert)
 
@@ -66,6 +70,44 @@ class AlertDispatcherJob(BaseJob):
             alert.message,
             json.dumps(alert.evidence, default=str),
         )
+
+    def _dispatch_email(self, alert: AlertResult) -> None:
+        email_cfg = self.notification_config.get("email", {})
+        smtp_host = email_cfg.get("smtp_host", "")
+        smtp_port = email_cfg.get("smtp_port", 587)
+        from_addr = email_cfg.get("from_address", "")
+        to_addrs = email_cfg.get("to_addresses", [])
+
+        if not smtp_host or not from_addr or not to_addrs:
+            logger.warning("Email notification enabled but not fully configured")
+            return
+
+        severity_label = alert.severity.upper()
+        msg = EmailMessage()
+        msg["Subject"] = f"[{severity_label}] Agent Manager Alert: {alert.rule_name}"
+        msg["From"] = from_addr
+        msg["To"] = ", ".join(to_addrs)
+        msg.set_content(
+            f"Rule: {alert.rule_name}\n"
+            f"Severity: {severity_label}\n"
+            f"Message: {alert.message}\n\n"
+            f"Evidence:\n{json.dumps(alert.evidence, indent=2, default=str)}\n"
+        )
+
+        try:
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
+                server.ehlo()
+                if smtp_port == 587:
+                    server.starttls()
+                    server.ehlo()
+                username = email_cfg.get("username")
+                password = email_cfg.get("password")
+                if username and password:
+                    server.login(username, password)
+                server.send_message(msg)
+            logger.info("Email alert dispatched to %s", to_addrs)
+        except Exception as exc:
+            logger.error("Email dispatch failed: %s", exc)
 
     def _dispatch_webhook(self, alert: AlertResult) -> None:
         url = self.notification_config.get("webhook", {}).get("url", "")

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 import yaml
@@ -54,6 +54,41 @@ def _query(sql: str, params: tuple = (), limit: int = 100) -> list[dict]:
 def _query_one(sql: str, params: tuple = ()) -> dict | None:
     rows = _query(sql, params, limit=1)
     return rows[0] if rows else None
+
+
+# ── Health check ────────────────────────────────────────────────────────
+
+
+@app.get("/health")
+def health():
+    """Health check endpoint for monitoring and container orchestration."""
+    checks: dict[str, Any] = {"status": "healthy"}
+
+    # Verify database is accessible
+    try:
+        db = _db_path()
+        if not db.exists():
+            checks["status"] = "unhealthy"
+            checks["database"] = "file not found"
+        else:
+            conn = sqlite3.connect(str(db))
+            conn.execute("SELECT 1")
+            conn.close()
+            checks["database"] = "ok"
+    except Exception as e:
+        checks["status"] = "unhealthy"
+        checks["database"] = str(e)
+
+    # Verify config is loadable
+    try:
+        _get_config()
+        checks["config"] = "ok"
+    except Exception as e:
+        checks["status"] = "unhealthy"
+        checks["config"] = str(e)
+
+    status_code = 200 if checks["status"] == "healthy" else 503
+    return JSONResponse(content=checks, status_code=status_code)
 
 
 # ── API Routes ──────────────────────────────────────────────────────────

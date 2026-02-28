@@ -1,9 +1,11 @@
 """Launch the web dashboard server."""
 
+import os
+
 import uvicorn
 
 
-def main(host: str = "127.0.0.1", port: int = 8080):
+def main(host: str = "0.0.0.0", port: int = 8080):
     uvicorn.run("ui.web.app:app", host=host, port=port, reload=True)
 
 

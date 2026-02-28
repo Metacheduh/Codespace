@@ -157,6 +157,8 @@ notifications:
     enabled: false
     smtp_host: ""
     smtp_port: 587
+    username: ""
+    password: ""
     from_address: ""
     to_addresses: []
   webhook:
