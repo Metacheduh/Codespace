@@ -1,0 +1,184 @@
+# ============================================================================
+# Deterministic Agent Manager Configuration
+# ============================================================================
+# All scheduling, thresholds, and routing decisions are driven by this file.
+# No LLM is involved in job orchestration or alert decisions.
+
+database:
+  path: "data/agent_manager.db"
+
+# ---------------------------------------------------------------------------
+# Schedule definitions (cron-style)
+# Each job references a schedule_id defined here.
+# ---------------------------------------------------------------------------
+schedules:
+  every_15_min:
+    cron: "*/15 * * * *"
+  hourly:
+    cron: "0 * * * *"
+  every_6_hours:
+    cron: "0 */6 * * *"
+  daily_morning:
+    cron: "0 8 * * *"
+  daily_evening:
+    cron: "0 18 * * *"
+  weekly_monday:
+    cron: "0 9 * * 1"
+
+# ---------------------------------------------------------------------------
+# Retry / back-off policy
+# ---------------------------------------------------------------------------
+retry:
+  max_attempts: 3
+  backoff_base_seconds: 60
+  backoff_multiplier: 2       # exponential: 60s, 120s, 240s
+
+# ---------------------------------------------------------------------------
+# Job definitions
+# ---------------------------------------------------------------------------
+jobs:
+  usvsst_scraper:
+    description: "Scrape USVSST fund-balance and qualifying-cases pages"
+    schedule_id: "hourly"
+    timeout_seconds: 120
+    retry_policy: "default"
+    sources:
+      - name: "fund_balance"
+        url: "https://www.justice.gov/usvsst/fund-balance"
+        selectors:
+          balance: "table.fund-balance td.amount"
+      - name: "qualifying_cases"
+        url: "https://www.justice.gov/usvsst/qualifying-cases"
+        selectors:
+          case_rows: "table.cases tbody tr"
+
+  doj_monitor:
+    description: "Monitor DOJ press releases for enforcement keywords"
+    schedule_id: "every_6_hours"
+    timeout_seconds: 180
+    retry_policy: "default"
+    sources:
+      - name: "press_releases"
+        url: "https://www.justice.gov/news"
+        selectors:
+          articles: "div.views-row"
+    keywords:
+      - "victim compensation"
+      - "restitution"
+      - "forfeiture"
+      - "IEEPA"
+      - "sanctions"
+      - "terrorism financing"
+
+  ofac_monitor:
+    description: "Monitor OFAC SDN list updates and sanctions actions"
+    schedule_id: "daily_morning"
+    timeout_seconds: 180
+    retry_policy: "default"
+    sources:
+      - name: "recent_actions"
+        url: "https://ofac.treasury.gov/recent-actions"
+        selectors:
+          actions: "div.recent-action-item"
+    keywords:
+      - "IEEPA"
+      - "terrorism"
+      - "WMD proliferation"
+      - "narcotics"
+      - "cyber"
+
+  dpi_calculator:
+    description: "Compute Deposit Predictability Index from confirmed deposits"
+    schedule_id: "daily_evening"
+    timeout_seconds: 60
+    retry_policy: "default"
+    depends_on:
+      - "usvsst_scraper"
+
+  alert_dispatcher:
+    description: "Evaluate alert rules and dispatch notifications"
+    schedule_id: "every_15_min"
+    timeout_seconds: 30
+    retry_policy: "default"
+    depends_on:
+      - "usvsst_scraper"
+      - "dpi_calculator"
+
+# ---------------------------------------------------------------------------
+# Alert rules  (deterministic — purely threshold / diff based)
+# ---------------------------------------------------------------------------
+alert_rules:
+  balance_change:
+    description: "Fund balance changed beyond threshold"
+    field: "fund_balance"
+    condition: "abs_change_gte"
+    threshold: 1000.00
+    severity: "high"
+
+  new_qualifying_case:
+    description: "New qualifying case detected"
+    field: "qualifying_case_count"
+    condition: "increase"
+    threshold: 1
+    severity: "medium"
+
+  dpi_drop:
+    description: "DPI dropped below warning threshold"
+    field: "dpi_score"
+    condition: "lt"
+    threshold: 0.4
+    severity: "high"
+
+  keyword_hit:
+    description: "Enforcement keyword matched in new article"
+    field: "keyword_matches"
+    condition: "new_matches"
+    threshold: 1
+    severity: "medium"
+
+# ---------------------------------------------------------------------------
+# DPI calculation parameters
+# ---------------------------------------------------------------------------
+dpi:
+  lookback_days: 365
+  min_deposits: 3
+  weights:
+    regularity: 0.4       # how regular the intervals are
+    recency: 0.3           # time since last deposit
+    trend: 0.3             # increasing vs decreasing amounts
+
+# ---------------------------------------------------------------------------
+# Notification channels
+# ---------------------------------------------------------------------------
+notifications:
+  log:
+    enabled: true
+  email:
+    enabled: false
+    smtp_host: ""
+    smtp_port: 587
+    from_address: ""
+    to_addresses: []
+  webhook:
+    enabled: false
+    url: ""
+
+# ---------------------------------------------------------------------------
+# Optional LLM helpers  (advisory only — never authoritative)
+# ---------------------------------------------------------------------------
+llm_helpers:
+  memo_summary:
+    enabled: false
+    model: "claude-haiku-4-5-20251001"
+    max_tokens: 1024
+    # Output goes to memo text column only; never modifies facts or triggers alerts
+  classification:
+    enabled: false
+    model: "claude-haiku-4-5-20251001"
+    max_tokens: 256
+    # Output: advisory tags only; does not affect confirmed status
+  parser_repair:
+    enabled: false
+    model: "claude-sonnet-4-6"
+    max_tokens: 2048
+    requires_human_approval: true
