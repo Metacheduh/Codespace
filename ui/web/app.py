@@ -9,13 +9,15 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import generate_latest, REGISTRY as prometheus_registry
+from starlette.middleware.base import BaseHTTPMiddleware
 
 import yaml
 
@@ -26,6 +28,45 @@ _ROOT = _HERE.parent.parent
 _CONFIG_PATH = _ROOT / "config.yaml"
 
 app = FastAPI(title="Agent Manager Dashboard", version="0.1.0")
+
+# ── Rate limiting middleware ─────────────────────────────────────────
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Simple rate limiter: 100 requests per minute per IP."""
+
+    def __init__(self, app, requests_per_minute: int = 100):
+        super().__init__(app)
+        self.requests_per_minute = requests_per_minute
+        self.request_times: dict[str, list[float]] = {}
+
+    async def dispatch(self, request: Request, call_next):
+        # Skip rate limiting for static files, health, and metrics
+        if request.url.path.startswith("/static") or request.url.path in ("/health", "/metrics"):
+            return await call_next(request)
+
+        client_ip = request.client.host if request.client else "unknown"
+        now = time.time()
+
+        # Clean old requests (older than 60 seconds)
+        if client_ip in self.request_times:
+            self.request_times[client_ip] = [t for t in self.request_times[client_ip] if now - t < 60]
+        else:
+            self.request_times[client_ip] = []
+
+        # Check rate limit
+        if len(self.request_times[client_ip]) >= self.requests_per_minute:
+            return JSONResponse(
+                status_code=429,
+                content={"error": "Rate limit exceeded: 100 requests per minute"},
+            )
+
+        # Record this request
+        self.request_times[client_ip].append(now)
+        return await call_next(request)
+
+
+# Add rate limiting middleware
+app.add_middleware(RateLimitMiddleware, requests_per_minute=100)
 
 # Serve static assets (CSS/JS)
 app.mount("/static", StaticFiles(directory=str(_HERE / "static")), name="static")
@@ -303,6 +344,90 @@ def api_alert_analytics():
         }
     finally:
         conn.close()
+
+
+# ── Data export endpoints ────────────────────────────────────────────────
+
+@app.get("/api/export/alerts")
+def export_alerts():
+    """Export alerts as CSV."""
+    alerts = _query(
+        "SELECT id, rule_name, severity, message, acknowledged, created_at FROM alerts ORDER BY id DESC"
+    )
+
+    # Generate CSV
+    lines = ["id,rule_name,severity,message,acknowledged,created_at"]
+    for alert in alerts:
+        # Escape CSV fields
+        fields = [
+            str(alert["id"]),
+            f'"{alert["rule_name"]}"',
+            alert["severity"],
+            f'"{alert["message"].replace(chr(34), chr(34)*2)}"',  # Escape quotes
+            str(alert["acknowledged"]),
+            alert["created_at"],
+        ]
+        lines.append(",".join(fields))
+
+    csv_content = "\n".join(lines)
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=alerts.csv"},
+    )
+
+
+@app.get("/api/export/dpi-scores")
+def export_dpi_scores():
+    """Export DPI scores as CSV."""
+    scores = _query(
+        "SELECT id, score, regularity, recency, trend, computed_at FROM dpi_scores ORDER BY id DESC"
+    )
+
+    # Generate CSV
+    lines = ["id,score,regularity,recency,trend,computed_at"]
+    for score in scores:
+        fields = [
+            str(score["id"]),
+            f"{score['score']:.6f}",
+            f"{score['regularity']:.6f}",
+            f"{score['recency']:.6f}",
+            f"{score['trend']:.6f}",
+            score["computed_at"],
+        ]
+        lines.append(",".join(fields))
+
+    csv_content = "\n".join(lines)
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=dpi_scores.csv"},
+    )
+
+
+@app.get("/api/export/balances")
+def export_balances():
+    """Export fund balance history as CSV."""
+    balances = _query(
+        "SELECT id, balance_amount, recorded_at FROM fund_balances ORDER BY id DESC"
+    )
+
+    # Generate CSV
+    lines = ["id,balance_amount,recorded_at"]
+    for bal in balances:
+        fields = [
+            str(bal["id"]),
+            f"{bal['balance_amount']:.2f}",
+            bal["recorded_at"],
+        ]
+        lines.append(",".join(fields))
+
+    csv_content = "\n".join(lines)
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=fund_balances.csv"},
+    )
 
 
 # ── HTML frontend ───────────────────────────────────────────────────────
