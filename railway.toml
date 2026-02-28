@@ -1,0 +1,18 @@
+# Railway configuration for Agent Manager
+# Reference: https://docs.railway.app/reference/config-as-code
+
+[build]
+# Use the Dockerfile for building
+builder = "dockerfile"
+
+[deploy]
+# Port the app listens on (matches our FastAPI config)
+port = 8080
+startCommand = "python -m ui.web.run"
+healthcheckPath = "/health"
+healthcheckTimeout = 10
+
+[[services]]
+name = "agent-manager-web"
+type = "web"
+domain = true  # Automatically assign a public domain

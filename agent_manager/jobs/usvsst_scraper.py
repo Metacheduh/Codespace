@@ -18,6 +18,9 @@ import sqlite3
 from typing import Any
 from urllib.request import Request, urlopen
 
+from bs4 import BeautifulSoup
+
+from agent_manager.helpers.circuit_breaker import CircuitBreakerManager
 from agent_manager.jobs.base import BaseJob
 from agent_manager.models import Database
 
@@ -27,9 +30,15 @@ logger = logging.getLogger(__name__)
 class USVSSTScraperJob(BaseJob):
     name = "usvsst_scraper"
 
-    def __init__(self, config: dict[str, Any], db: Database) -> None:
+    def __init__(
+        self,
+        config: dict[str, Any],
+        db: Database,
+        circuit_breakers: CircuitBreakerManager | None = None,
+    ) -> None:
         super().__init__(config, db)
         self.sources = config.get("sources", [])
+        self.circuit_breakers = circuit_breakers
 
     def execute(self, conn: sqlite3.Connection, run_id: int) -> None:
         for source in self.sources:
@@ -37,7 +46,20 @@ class USVSSTScraperJob(BaseJob):
             url = source["url"]
             logger.info("Fetching %s from %s", source_name, url)
 
-            html = self._fetch(url)
+            # Check circuit breaker before fetching
+            if self.circuit_breakers and not self.circuit_breakers.allow_request(url):
+                logger.warning("Circuit breaker OPEN for %s — skipping", url)
+                continue
+
+            try:
+                html = self._fetch(url)
+                if self.circuit_breakers:
+                    self.circuit_breakers.record_success(url)
+            except Exception as e:
+                if self.circuit_breakers:
+                    self.circuit_breakers.record_failure(url)
+                raise
+
             content_hash = self.content_hash(html)
 
             # Store raw snapshot
@@ -59,24 +81,42 @@ class USVSSTScraperJob(BaseJob):
                 logger.info("No change detected for %s", source_name)
                 continue
 
+            selectors = source.get("selectors", {})
             if source_name == "fund_balance":
-                self._parse_fund_balance(conn, run_id, html)
+                self._parse_fund_balance(conn, run_id, html, selectors)
             elif source_name == "qualifying_cases":
-                self._parse_qualifying_cases(conn, run_id, html)
+                self._parse_qualifying_cases(conn, run_id, html, selectors)
 
     def _fetch(self, url: str) -> str:
         req = Request(url, headers={"User-Agent": "AgentManager/0.1"})
         with urlopen(req, timeout=self.config.get("timeout_seconds", 120)) as resp:  # noqa: S310
             return resp.read().decode("utf-8", errors="replace")
 
-    def _parse_fund_balance(self, conn: sqlite3.Connection, run_id: int, html: str) -> None:
-        """Extract dollar amounts from the fund balance page.
+    def _parse_fund_balance(
+        self, conn: sqlite3.Connection, run_id: int, html: str, selectors: dict
+    ) -> None:
+        """Extract dollar amounts from the fund balance page using CSS selectors.
 
-        Uses deterministic regex parsing — no LLM.
+        Uses deterministic BeautifulSoup parsing — no LLM.
         """
-        # Match dollar amounts like $1,234,567.89
-        amounts = re.findall(r"\$[\d,]+(?:\.\d{2})?", html)
-        for raw in amounts:
+        soup = BeautifulSoup(html, "html.parser")
+        selector = selectors.get("balance")
+        if not selector:
+            logger.warning("No 'balance' selector configured")
+            return
+
+        elements = soup.select(selector)
+        if not elements:
+            logger.warning("No elements matched selector: %s", selector)
+            return
+
+        for element in elements:
+            text = element.get_text(strip=True)
+            # Match dollar amounts like $1,234,567.89
+            match = re.search(r"\$[\d,]+(?:\.\d{2})?", text)
+            if not match:
+                continue
+            raw = match.group(0)
             cleaned = raw.replace("$", "").replace(",", "")
             try:
                 amount = float(cleaned)
@@ -88,21 +128,30 @@ class USVSSTScraperJob(BaseJob):
             )
             logger.info("Recorded fund balance: %s (%.2f)", raw, amount)
 
-    def _parse_qualifying_cases(self, conn: sqlite3.Connection, run_id: int, html: str) -> None:
-        """Extract qualifying case names from the page.
+    def _parse_qualifying_cases(
+        self, conn: sqlite3.Connection, run_id: int, html: str, selectors: dict
+    ) -> None:
+        """Extract qualifying case names from the page using CSS selectors.
 
-        Uses deterministic parsing — no LLM.
+        Uses deterministic BeautifulSoup parsing — no LLM.
         """
-        # Simple extraction: look for case-like patterns
-        # Real implementation would use CSS selectors from config
-        case_pattern = re.findall(
-            r'<tr[^>]*>.*?<td[^>]*>(.*?)</td>.*?<td[^>]*>(.*?)</td>',
-            html,
-            re.DOTALL,
-        )
-        for case_name_raw, details_raw in case_pattern:
-            case_name = re.sub(r"<[^>]+>", "", case_name_raw).strip()
-            details = re.sub(r"<[^>]+>", "", details_raw).strip()
+        soup = BeautifulSoup(html, "html.parser")
+        selector = selectors.get("case_rows")
+        if not selector:
+            logger.warning("No 'case_rows' selector configured")
+            return
+
+        rows = soup.select(selector)
+        if not rows:
+            logger.warning("No rows matched selector: %s", selector)
+            return
+
+        for row in rows:
+            cells = row.find_all("td")
+            if len(cells) < 2:
+                continue
+            case_name = cells[0].get_text(strip=True)
+            details = cells[1].get_text(strip=True)
             if not case_name:
                 continue
             # UPSERT: only insert if not already known
@@ -111,6 +160,7 @@ class USVSSTScraperJob(BaseJob):
                 "VALUES (?, ?, ?)",
                 (run_id, case_name, details),
             )
+            logger.info("Recorded qualifying case: %s", case_name)
 
     def _detect_deposits(self, conn: sqlite3.Connection, run_id: int) -> None:
         """Detect new deposits by comparing consecutive fund balances.

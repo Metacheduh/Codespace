@@ -15,6 +15,9 @@ import sqlite3
 from typing import Any
 from urllib.request import Request, urlopen
 
+from bs4 import BeautifulSoup
+
+from agent_manager.helpers.circuit_breaker import CircuitBreakerManager
 from agent_manager.jobs.base import BaseJob
 from agent_manager.models import Database
 
@@ -24,16 +27,36 @@ logger = logging.getLogger(__name__)
 class DOJMonitorJob(BaseJob):
     name = "doj_monitor"
 
-    def __init__(self, config: dict[str, Any], db: Database) -> None:
+    def __init__(
+        self,
+        config: dict[str, Any],
+        db: Database,
+        circuit_breakers: CircuitBreakerManager | None = None,
+    ) -> None:
         super().__init__(config, db)
         self.sources = config.get("sources", [])
         self.keywords: list[str] = [k.lower() for k in config.get("keywords", [])]
+        self.circuit_breakers = circuit_breakers
 
     def execute(self, conn: sqlite3.Connection, run_id: int) -> None:
         for source in self.sources:
             url = source["url"]
             logger.info("Fetching DOJ articles from %s", url)
-            html = self._fetch(url)
+
+            # Check circuit breaker before fetching
+            if self.circuit_breakers and not self.circuit_breakers.allow_request(url):
+                logger.warning("Circuit breaker OPEN for %s — skipping", url)
+                continue
+
+            try:
+                html = self._fetch(url)
+                if self.circuit_breakers:
+                    self.circuit_breakers.record_success(url)
+            except Exception as e:
+                if self.circuit_breakers:
+                    self.circuit_breakers.record_failure(url)
+                raise
+
             content_hash = self.content_hash(html)
 
             conn.execute(
@@ -42,7 +65,8 @@ class DOJMonitorJob(BaseJob):
                 (source["name"], run_id, url, content_hash, html),
             )
 
-            articles = self._extract_articles(html)
+            selectors = source.get("selectors", {})
+            articles = self._extract_articles(html, selectors)
             for article in articles:
                 self._process_article(conn, run_id, article, "doj")
 
@@ -51,19 +75,30 @@ class DOJMonitorJob(BaseJob):
         with urlopen(req, timeout=self.config.get("timeout_seconds", 180)) as resp:  # noqa: S310
             return resp.read().decode("utf-8", errors="replace")
 
-    def _extract_articles(self, html: str) -> list[dict[str, str]]:
-        """Deterministic HTML parsing for article blocks."""
+    def _extract_articles(self, html: str, selectors: dict) -> list[dict[str, str]]:
+        """Extract articles using CSS selectors and BeautifulSoup."""
         articles: list[dict[str, str]] = []
-        # Extract <a> tags with titles and hrefs
-        pattern = re.findall(
-            r'<a[^>]+href="([^"]*)"[^>]*>(.*?)</a>',
-            html,
-            re.DOTALL,
-        )
-        for href, title_raw in pattern:
-            title = re.sub(r"<[^>]+>", "", title_raw).strip()
-            if title and len(title) > 10:
+        soup = BeautifulSoup(html, "html.parser")
+
+        article_selector = selectors.get("articles")
+        if not article_selector:
+            logger.warning("No 'articles' selector configured")
+            return articles
+
+        containers = soup.select(article_selector)
+        if not containers:
+            logger.debug("No article containers matched selector: %s", article_selector)
+            return articles
+
+        for container in containers:
+            link = container.find("a", href=True)
+            if not link:
+                continue
+            href = link.get("href", "").strip()
+            title = link.get_text(strip=True)
+            if title and len(title) > 10 and href:
                 articles.append({"title": title, "url": href})
+
         return articles
 
     def _process_article(

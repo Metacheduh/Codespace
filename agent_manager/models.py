@@ -14,6 +14,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from agent_manager.helpers.db_pool import SQLiteConnectionPool
+
 # ── Schema version (bump when migrations are needed) ──────────────────
 SCHEMA_VERSION = 1
 
@@ -138,26 +140,15 @@ class Database:
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Connection pool for reusing SQLite connections
+        self._pool = SQLiteConnectionPool(self.db_path, pool_size=5)
         self._init_schema()
-
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path))
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        return conn
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
-        conn = self._connect()
-        try:
+        """Get a database connection from the pool."""
+        with self._pool.get_connection() as conn:
             yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
 
     def _init_schema(self) -> None:
         with self.connection() as conn:

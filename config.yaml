@@ -157,6 +157,8 @@ notifications:
     enabled: false
     smtp_host: ""
     smtp_port: 587
+    username: ""
+    password: ""
     from_address: ""
     to_addresses: []
   webhook:
@@ -166,19 +168,26 @@ notifications:
 # ---------------------------------------------------------------------------
 # Optional LLM helpers  (advisory only — never authoritative)
 # ---------------------------------------------------------------------------
+# Set ANTHROPIC_API_KEY environment variable to enable LLM features
+# API key can also be set in llm_config.api_key below
+llm_config:
+  enabled: true  # Set to false to disable all LLM helpers
+  api_key: ""    # Or set via ANTHROPIC_API_KEY environment variable
+  model: "claude-haiku-4-5-20251001"  # Default model for helpers
+
 llm_helpers:
   memo_summary:
-    enabled: false
+    enabled: true
     model: "claude-haiku-4-5-20251001"
     max_tokens: 1024
     # Output goes to memo text column only; never modifies facts or triggers alerts
   classification:
-    enabled: false
+    enabled: true
     model: "claude-haiku-4-5-20251001"
     max_tokens: 256
     # Output: advisory tags only; does not affect confirmed status
   parser_repair:
-    enabled: false
+    enabled: true
     model: "claude-sonnet-4-6"
     max_tokens: 2048
     requires_human_approval: true

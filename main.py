@@ -7,19 +7,16 @@ Run this script manually to test, or let launchd run it every minute.
 
 import logging
 import sys
-from datetime import datetime
 from pathlib import Path
 
+from agent_manager.helpers.logging_config import setup_logging
 from agent_manager.manager import AgentManager
 
-# Configure logging
-logging.basicConfig(
+# Configure structured JSON logging
+setup_logging(
+    log_file=Path.home() / ".agent_manager" / "agent_manager.log",
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.FileHandler(Path.home() / ".agent_manager" / "agent_manager.log"),
-        logging.StreamHandler(sys.stdout),
-    ],
+    json_format=True,
 )
 logger = logging.getLogger(__name__)
 
