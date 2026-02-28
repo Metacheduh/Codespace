@@ -13,10 +13,13 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Query
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from prometheus_client import generate_latest, REGISTRY as prometheus_registry
 
 import yaml
+
+from agent_manager.helpers.metrics import REGISTRY, update_metrics_from_db
 
 _HERE = Path(__file__).resolve().parent
 _ROOT = _HERE.parent.parent
@@ -89,6 +92,13 @@ def health():
 
     status_code = 200 if checks["status"] == "healthy" else 503
     return JSONResponse(content=checks, status_code=status_code)
+
+
+@app.get("/metrics")
+def metrics():
+    """Prometheus metrics endpoint."""
+    update_metrics_from_db(_db_path())
+    return Response(content=generate_latest(REGISTRY), media_type="text/plain; charset=utf-8")
 
 
 # ── API Routes ──────────────────────────────────────────────────────────
@@ -244,6 +254,55 @@ def api_config():
                 if key in channel:
                     channel[key] = "***"
     return cfg
+
+
+@app.get("/api/alert-analytics")
+def api_alert_analytics():
+    """Alert history and analytics."""
+    db = _db_path()
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+
+    try:
+        # Alerts by severity (all time)
+        severity_stats = _query(
+            "SELECT severity, COUNT(*) as count FROM alerts GROUP BY severity ORDER BY severity"
+        )
+
+        # Alerts by rule (all time)
+        rule_stats = _query(
+            "SELECT rule_name, COUNT(*) as count, COUNT(CASE WHEN acknowledged=1 THEN 1 END) as acknowledged "
+            "FROM alerts GROUP BY rule_name ORDER BY count DESC"
+        )
+
+        # Acknowledgement rate
+        ack_stats = _query_one(
+            "SELECT "
+            "COUNT(*) as total, "
+            "COUNT(CASE WHEN acknowledged=1 THEN 1 END) as acknowledged, "
+            "CAST(COUNT(CASE WHEN acknowledged=1 THEN 1 END) AS FLOAT) / COUNT(*) as ack_rate "
+            "FROM alerts"
+        )
+
+        # Recent alerts (last 24 hours)
+        recent = _query(
+            "SELECT severity, COUNT(*) as count FROM alerts "
+            "WHERE created_at >= datetime('now', '-1 day') "
+            "GROUP BY severity ORDER BY severity"
+        )
+
+        return {
+            "severity_distribution": severity_stats,
+            "rule_statistics": rule_stats,
+            "acknowledgement": {
+                "total": ack_stats["total"] if ack_stats else 0,
+                "acknowledged": ack_stats["acknowledged"] if ack_stats else 0,
+                "rate": float(ack_stats["ack_rate"]) if ack_stats and ack_stats["ack_rate"] else 0,
+            },
+            "recent_24h": recent,
+        }
+    finally:
+        conn.close()
 
 
 # ── HTML frontend ───────────────────────────────────────────────────────
