@@ -8,6 +8,7 @@ Respects the NEVER_MODIFY constraint: LLM outputs go only to advisory columns.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -79,7 +80,8 @@ def create_llm_client(config: dict[str, Any]) -> AnthropicClient | None:
     if not config.get("enabled", False):
         return None
 
-    api_key = config.get("api_key") or None
+    # Read API key from config or environment variable
+    api_key = config.get("api_key") or os.environ.get("ANTHROPIC_API_KEY") or None
     model = config.get("model", "claude-opus-4-6")
 
     client = AnthropicClient(api_key=api_key, model=model)
