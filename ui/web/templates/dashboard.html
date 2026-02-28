@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Manager Dashboard</title>
+<style>
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --border: #2a2d3a;
+  --text: #e1e4ed;
+  --muted: #8b8fa3;
+  --accent: #6c8aff;
+  --green: #4ade80;
+  --red: #f87171;
+  --yellow: #fbbf24;
+  --orange: #fb923c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg); color: var(--text); line-height: 1.5;
+}
+.container { max-width: 1280px; margin: 0 auto; padding: 20px; }
+header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 0; border-bottom: 1px solid var(--border); margin-bottom: 24px;
+}
+header h1 { font-size: 20px; font-weight: 600; }
+#refresh-btn {
+  background: var(--surface); border: 1px solid var(--border); color: var(--text);
+  padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;
+}
+#refresh-btn:hover { border-color: var(--accent); }
+#last-refresh { font-size: 12px; color: var(--muted); margin-left: 12px; }
+
+/* ── Status cards ──────────────────── */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 16px;
+}
+.card-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.card-value { font-size: 28px; font-weight: 700; margin-top: 4px; }
+.card-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+/* ── Tabs ──────────────────────────── */
+.tabs {
+  display: flex; gap: 4px; border-bottom: 1px solid var(--border);
+  margin-bottom: 20px; overflow-x: auto;
+}
+.tab {
+  padding: 8px 16px; font-size: 13px; cursor: pointer;
+  border: none; background: none; color: var(--muted);
+  border-bottom: 2px solid transparent; white-space: nowrap;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* ── Tables ────────────────────────── */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th {
+  text-align: left; padding: 8px 12px; font-weight: 600; font-size: 11px;
+  text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+td { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+tr:hover { background: rgba(108, 138, 255, 0.04); }
+
+/* ── Badges ────────────────────────── */
+.badge {
+  display: inline-block; padding: 2px 8px; border-radius: 4px;
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+}
+.badge-succeeded, .badge-low { background: rgba(74,222,128,.15); color: var(--green); }
+.badge-failed, .badge-critical { background: rgba(248,113,113,.15); color: var(--red); }
+.badge-running, .badge-medium { background: rgba(251,191,36,.15); color: var(--yellow); }
+.badge-pending, .badge-high { background: rgba(251,146,60,.15); color: var(--orange); }
+.badge-doj { background: rgba(108,138,255,.15); color: var(--accent); }
+.badge-ofac { background: rgba(168,85,247,.15); color: #a855f7; }
+
+/* ── Ack button ────────────────────── */
+.ack-btn {
+  background: none; border: 1px solid var(--border); color: var(--muted);
+  padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;
+}
+.ack-btn:hover { border-color: var(--green); color: var(--green); }
+.acked { color: var(--green); font-size: 11px; }
+
+/* ── DPI gauge ─────────────────────── */
+.dpi-gauge {
+  display: flex; align-items: center; gap: 16px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 20px; margin-bottom: 20px;
+}
+.gauge-bar {
+  flex: 1; height: 12px; background: var(--border); border-radius: 6px; overflow: hidden;
+}
+.gauge-fill { height: 100%; border-radius: 6px; transition: width .5s; }
+.gauge-label { font-size: 32px; font-weight: 700; min-width: 80px; }
+
+/* ── Empty state ───────────────────── */
+.empty { text-align: center; padding: 40px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <h1>Agent Manager</h1>
+  <div>
+    <button id="refresh-btn" onclick="refreshAll()">Refresh</button>
+    <span id="last-refresh"></span>
+  </div>
+</header>
+
+<!-- Status cards -->
+<div class="cards" id="status-cards"></div>
+
+<!-- Tabs -->
+<div class="tabs" id="tabs">
+  <button class="tab active" data-tab="jobs">Jobs</button>
+  <button class="tab" data-tab="alerts">Alerts</button>
+  <button class="tab" data-tab="dpi">DPI</button>
+  <button class="tab" data-tab="balances">Balances</button>
+  <button class="tab" data-tab="deposits">Deposits</button>
+  <button class="tab" data-tab="articles">Articles</button>
+  <button class="tab" data-tab="cases">Cases</button>
+</div>
+
+<div class="tab-panel active" id="panel-jobs"></div>
+<div class="tab-panel" id="panel-alerts"></div>
+<div class="tab-panel" id="panel-dpi"></div>
+<div class="tab-panel" id="panel-balances"></div>
+<div class="tab-panel" id="panel-deposits"></div>
+<div class="tab-panel" id="panel-articles"></div>
+<div class="tab-panel" id="panel-cases"></div>
+
+</div>
+
+<script>
+// ── Tab switching ──────────────────────────────────────────────
+document.getElementById('tabs').addEventListener('click', e => {
+  if (!e.target.classList.contains('tab')) return;
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  e.target.classList.add('active');
+  document.getElementById('panel-' + e.target.dataset.tab).classList.add('active');
+});
+
+// ── Helpers ────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const badge = (val, prefix) => `<span class="badge badge-${prefix || val}">${val}</span>`;
+const fmt = v => v ?? '—';
+const fmtMoney = v => v != null ? '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits: 2}) : '—';
+const fmtDate = v => v ? v.replace('T', ' ').slice(0, 19) : '—';
+
+function table(headers, rows) {
+  if (!rows.length) return '<div class="empty">No data yet</div>';
+  return `<table><thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead>
+    <tbody>${rows.join('')}</tbody></table>`;
+}
+
+async function api(path) {
+  const r = await fetch('/api/' + path);
+  return r.json();
+}
+
+// ── Render functions ───────────────────────────────────────────
+async function renderStatus() {
+  const s = await api('status');
+  $('status-cards').innerHTML = `
+    <div class="card">
+      <div class="card-label">Total Runs</div>
+      <div class="card-value">${s.total_runs}</div>
+      <div class="card-sub">Last: ${s.latest_run ? s.latest_run.job_name : '—'}</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Open Alerts</div>
+      <div class="card-value" style="color:${s.open_alerts > 0 ? 'var(--red)' : 'var(--green)'}">${s.open_alerts}</div>
+      <div class="card-sub">Unacknowledged</div>
+    </div>
+    <div class="card">
+      <div class="card-label">DPI Score</div>
+      <div class="card-value">${s.latest_dpi ? s.latest_dpi.score.toFixed(3) : '—'}</div>
+      <div class="card-sub">${s.latest_dpi ? fmtDate(s.latest_dpi.computed_at) : 'Not computed'}</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Fund Balance</div>
+      <div class="card-value">${s.latest_balance ? fmtMoney(s.latest_balance.balance_amount) : '—'}</div>
+      <div class="card-sub">${s.latest_balance ? fmtDate(s.latest_balance.recorded_at) : 'Not fetched'}</div>
+    </div>
+  `;
+}
+
+async function renderJobs() {
+  const jobs = await api('jobs');
+  $('panel-jobs').innerHTML = table(
+    ['ID', 'Job', 'Status', 'Attempt', 'Started', 'Finished', 'Error'],
+    jobs.map(j => `<tr>
+      <td>${j.id}</td><td><strong>${j.job_name}</strong></td>
+      <td>${badge(j.status)}</td><td>${j.attempt}</td>
+      <td>${fmtDate(j.started_at)}</td><td>${fmtDate(j.finished_at)}</td>
+      <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis">${fmt(j.error_message)}</td>
+    </tr>`)
+  );
+}
+
+async function renderAlerts() {
+  const alerts = await api('alerts');
+  $('panel-alerts').innerHTML = table(
+    ['ID', 'Rule', 'Severity', 'Message', 'Created', 'Ack'],
+    alerts.map(a => `<tr>
+      <td>${a.id}</td><td>${a.rule_name}</td>
+      <td>${badge(a.severity)}</td>
+      <td style="max-width:400px">${a.message}</td>
+      <td>${fmtDate(a.created_at)}</td>
+      <td>${a.acknowledged
+        ? '<span class="acked">Acknowledged</span>'
+        : `<button class="ack-btn" onclick="ackAlert(${a.id})">Acknowledge</button>`}</td>
+    </tr>`)
+  );
+}
+
+async function ackAlert(id) {
+  await fetch(`/api/alerts/${id}/acknowledge`, { method: 'POST' });
+  renderAlerts();
+  renderStatus();
+}
+
+async function renderDPI() {
+  const scores = await api('dpi');
+  const latest = scores[0];
+  const gaugeColor = !latest ? 'var(--muted)' :
+    latest.score >= 0.7 ? 'var(--green)' :
+    latest.score >= 0.4 ? 'var(--yellow)' : 'var(--red)';
+  const gaugeWidth = latest ? (latest.score * 100) + '%' : '0%';
+
+  $('panel-dpi').innerHTML = `
+    <div class="dpi-gauge">
+      <div class="gauge-label" style="color:${gaugeColor}">${latest ? latest.score.toFixed(3) : '—'}</div>
+      <div class="gauge-bar"><div class="gauge-fill" style="width:${gaugeWidth};background:${gaugeColor}"></div></div>
+    </div>
+    ${table(
+      ['ID', 'Score', 'Regularity', 'Recency', 'Trend', 'Computed'],
+      scores.map(s => `<tr>
+        <td>${s.id}</td><td><strong>${s.score.toFixed(3)}</strong></td>
+        <td>${s.regularity.toFixed(3)}</td><td>${s.recency.toFixed(3)}</td>
+        <td>${s.trend.toFixed(3)}</td><td>${fmtDate(s.computed_at)}</td>
+      </tr>`)
+    )}
+  `;
+}
+
+async function renderBalances() {
+  const bal = await api('balances');
+  $('panel-balances').innerHTML = table(
+    ['ID', 'Balance', 'Recorded'],
+    bal.map(b => `<tr>
+      <td>${b.id}</td><td><strong>${fmtMoney(b.balance_amount)}</strong></td>
+      <td>${fmtDate(b.recorded_at)}</td>
+    </tr>`)
+  );
+}
+
+async function renderDeposits() {
+  const deps = await api('deposits');
+  $('panel-deposits').innerHTML = table(
+    ['ID', 'Amount', 'Source Posting', 'Deposit Date', 'Confirmed', 'Confirmed At'],
+    deps.map(d => `<tr>
+      <td>${d.id}</td><td><strong>${fmtMoney(d.amount)}</strong></td>
+      <td>${fmt(d.source_posting)}</td><td>${fmtDate(d.deposit_date)}</td>
+      <td>${d.confirmed ? badge('confirmed', 'succeeded') : badge('unconfirmed', 'pending')}</td>
+      <td>${fmtDate(d.confirmed_at)}</td>
+    </tr>`)
+  );
+}
+
+async function renderArticles() {
+  const arts = await api('articles');
+  $('panel-articles').innerHTML = table(
+    ['ID', 'Source', 'Title', 'Keywords', 'Published', 'Fetched'],
+    arts.map(a => `<tr>
+      <td>${a.id}</td><td>${badge(a.source)}</td>
+      <td><a href="${a.url}" target="_blank" style="color:var(--accent)">${a.title}</a></td>
+      <td>${fmt(a.keyword_hits)}</td>
+      <td>${fmtDate(a.published_date)}</td><td>${fmtDate(a.fetched_at)}</td>
+    </tr>`)
+  );
+}
+
+async function renderCases() {
+  const cases = await api('cases');
+  $('panel-cases').innerHTML = table(
+    ['ID', 'Case Name', 'Details', 'First Seen'],
+    cases.map(c => `<tr>
+      <td>${c.id}</td><td><strong>${c.case_name}</strong></td>
+      <td>${fmt(c.case_details)}</td><td>${fmtDate(c.first_seen_at)}</td>
+    </tr>`)
+  );
+}
+
+// ── Refresh all ────────────────────────────────────────────────
+async function refreshAll() {
+  await Promise.all([
+    renderStatus(), renderJobs(), renderAlerts(),
+    renderDPI(), renderBalances(), renderDeposits(),
+    renderArticles(), renderCases(),
+  ]);
+  $('last-refresh').textContent = 'Updated ' + new Date().toLocaleTimeString();
+}
+
+// Auto-refresh every 30 seconds
+refreshAll();
+setInterval(refreshAll, 30000);
+</script>
+</body>
+</html>

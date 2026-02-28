@@ -9,7 +9,15 @@ description = "Deterministic, rule-based Agent Manager for victim-compensation m
 requires-python = ">=3.10"
 dependencies = [
     "pyyaml>=6.0",
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "textual>=0.50.0",
 ]
+
+[project.scripts]
+agent-manager = "main:main"
+agent-manager-web = "ui.web.run:main"
+agent-manager-tui = "ui.cli:main"
 
 [project.optional-dependencies]
 dev = [
