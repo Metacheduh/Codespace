@@ -7,3 +7,5 @@ build/
 .pytest_cache/
 data/
 *.db
+.env
+venv/
